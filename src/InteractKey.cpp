@@ -18,6 +18,7 @@
 #include "GameObjectAI.h"
 #include "GossipDef.h"
 #include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "Log.h"
 #include "LootMgr.h"
 #include "ObjectAccessor.h"
