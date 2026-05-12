@@ -10,6 +10,14 @@ The module adds one chat command, `.interact`. When invoked, the server looks ar
 
 Players bind `.interact` to a key via the in-game macro system, so a single keypress feels like retail's V/F interact key.
 
+## About this module
+
+This module was developed collaboratively between [Talotan](https://github.com/Talotan) and [Claude Code](https://claude.com/claude-code) (Anthropic's CLI for Claude). The C++, configuration, documentation, and CI scaffolding were drafted by Claude under iterative direction and testing against a live AzerothCore + Playerbots server. Code, design choices, and final review are the maintainer's responsibility.
+
+## Issues and support
+
+If you hit a bug, want a feature, or have a question, please **[open an issue on this repository](https://github.com/Talotan/mod-interact-key/issues)** in the first instance rather than reaching out elsewhere. Issue templates are provided for bug reports and feature requests.
+
 ## How to install
 
 1. Clone this repository into your AzerothCore `modules/` folder. You should now have `mod-interact-key` there.
