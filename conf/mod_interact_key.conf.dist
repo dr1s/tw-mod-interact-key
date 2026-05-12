@@ -1,0 +1,113 @@
+#
+# Interact Key module configuration
+#
+# Provides the .interact chat command, intended to be bound to a key via an
+# in-game macro for retail-style "interact with nearest" gameplay.
+#
+
+[worldserver]
+
+#
+#    InteractKey.Enable
+#        Description: Enables the .interact command. When disabled, the command
+#                     responds with a notice but performs no action.
+#        Default:     1 - enabled
+#                     0 - disabled
+#
+
+InteractKey.Enable = 1
+
+#
+#    InteractKey.Range
+#        Description: Search radius (yards) used to find interactable creatures
+#                     and gameobjects around the player. WoW's natural
+#                     right-click range is ~5 yards; 5.5 gives a small buffer.
+#                     Clamped to 1.0-30.0.
+#        Default:     5.5
+#
+
+InteractKey.Range = 5.5
+
+#
+#    InteractKey.ConeDegrees
+#        Description: Angular field-of-view (in degrees) the search uses,
+#                     centered on the player's facing direction. 180 means
+#                     "everything in front of you", 90 is a narrow cone, and
+#                     360 (or 0) means omnidirectional. Lower values make
+#                     interaction feel more like aiming a reticle. The current
+#                     target bypasses this filter so tab-target + interact
+#                     always works.
+#        Default:     180.0
+#
+
+InteractKey.ConeDegrees = 180.0
+
+#
+#    InteractKey.CooldownMs
+#        Description: Minimum time (milliseconds) between two .interact
+#                     invocations from the same player. Prevents key-repeat
+#                     spam when the player holds the bound key. 0 disables
+#                     the cooldown. Capped at 5000.
+#        Default:     250
+#
+
+InteractKey.CooldownMs = 250
+
+#
+#    InteractKey.PreferCurrentTarget
+#        Description: When enabled, if the player already has a creature
+#                     selected and it is within range, the interact command
+#                     uses that creature regardless of cone direction. Lets
+#                     Tab-targeting feed into the interact key like retail.
+#        Default:     1 - enabled
+#                     0 - disabled
+#
+
+InteractKey.PreferCurrentTarget = 1
+
+#
+#    InteractKey.TargetHostile
+#        Description: When enabled, hostile creatures are eligible for the
+#                     automatic search. When disabled (default), only the
+#                     current target rule can pick a hostile creature, so
+#                     pressing interact near mobs and a friendly NPC will
+#                     always pick the friendly NPC.
+#        Default:     0 - disabled
+#                     1 - enabled
+#
+
+InteractKey.TargetHostile = 0
+
+#
+#    InteractKey.AutoAttackHostile
+#        Description: When the selected target is hostile (either picked
+#                     automatically with TargetHostile enabled, or carried
+#                     over from PreferCurrentTarget), start auto-attack.
+#        Default:     1 - enabled
+#                     0 - disabled (just selects the target)
+#
+
+InteractKey.AutoAttackHostile = 1
+
+#
+#    InteractKey.PrintFailMessage
+#        Description: When enabled, the player sees a chat notice if no
+#                     interactable target is found. Disable for a fully
+#                     silent failure mode.
+#        Default:     1 - enabled
+#                     0 - disabled
+#
+
+InteractKey.PrintFailMessage = 1
+
+#
+#    InteractKey.AnnounceTarget
+#        Description: Debug option. When enabled, the player sees a chat
+#                     line every time .interact picks a target, naming the
+#                     target and the distance. Useful for tuning Range and
+#                     ConeDegrees.
+#        Default:     0 - disabled
+#                     1 - enabled
+#
+
+InteractKey.AnnounceTarget = 0
