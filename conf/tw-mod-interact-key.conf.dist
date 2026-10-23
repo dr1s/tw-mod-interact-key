@@ -5,7 +5,7 @@
 # in-game macro for retail-style "interact with nearest" gameplay.
 #
 
-[worldserver]
+[ModuleConf]
 
 #
 #    InteractKey.Enable
@@ -111,3 +111,14 @@ InteractKey.PrintFailMessage = 1
 #
 
 InteractKey.AnnounceTarget = 0
+
+#
+#    InteractKey.Debug
+#        Description: When enabled, the module prints detailed logs to the
+#                     worldserver console about target classification and
+#                     interaction attempts. Useful for troubleshooting.
+#        Default:     0 - disabled
+#                     1 - enabled
+#
+
+InteractKey.Debug = 0

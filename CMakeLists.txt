@@ -1,6 +1,0 @@
-AC_ADD_SCRIPT("${CMAKE_CURRENT_LIST_DIR}/src/InteractKey.cpp")
-AC_ADD_SCRIPT("${CMAKE_CURRENT_LIST_DIR}/src/interact_key_loader.cpp")
-
-CU_SET_PATH("CMAKE_CONFIG_OUTPUT_DIR" "${CMAKE_CURRENT_LIST_DIR}/conf")
-
-CU_ADD_HOOK(AFTER_WORLDSERVER_CMAKE "${CMAKE_CURRENT_LIST_DIR}/conf/mod_interact_key.conf.dist")

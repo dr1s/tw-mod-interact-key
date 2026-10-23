@@ -1,50 +1,57 @@
-# ![logo](https://raw.githubusercontent.com/azerothcore/azerothcore.github.io/master/images/logo-github.png) AzerothCore
-
-# Interact Key for AzerothCore
+# Interact Key for Tortoise-WoW
 
 ## Overview
 
-A server-side "interact with target" key for AzerothCore (3.3.5a). Approximates retail WoW's interact key without touching client files.
+A server-side "interact with target" key for Tortoise-WoW. It approximates retail WoW's interact key with a small client addon helper for corpse looting.
 
 The module adds one chat command, `.interact`. When invoked, the server looks around the player for the most useful nearby target (lootable corpse, quest giver, vendor, gather node, door, etc.) and triggers the right interaction as if the player had right-clicked it.
 
 Players bind `.interact` to a key via the in-game macro system, so a single keypress feels like retail's V/F interact key.
 
-## About this module
-
-This module was developed collaboratively between [Talotan](https://github.com/Talotan) and [Claude Code](https://claude.com/claude-code) (Anthropic's CLI for Claude). The C++, configuration, documentation, and CI scaffolding were drafted by Claude under iterative direction and testing against a live AzerothCore + Playerbots server. Code, design choices, and final review are the maintainer's responsibility.
-
-## Issues and support
-
-If you hit a bug, want a feature, or have a question, please **[open an issue on this repository](https://github.com/Talotan/mod-interact-key/issues)** in the first instance rather than reaching out elsewhere. Issue templates are provided for bug reports and feature requests.
-
 ## How to install
 
-1. Clone this repository into your AzerothCore `modules/` folder. You should now have `mod-interact-key` there.
+### Server
+
+1. Clone this repository into your Tortoise-WoW `modules/` folder as `tw-mod-interact-key`.
 2. Re-run cmake to regenerate the build files.
 3. Re-build your worldserver.
-4. After building, copy `mod_interact_key.conf.dist` from `configs/modules/` to `configs/modules/mod_interact_key.conf` in your server's base directory (or just leave the `.dist`; the server will fall back to defaults).
+4. After building, copy `conf/tw-mod-interact-key.conf.dist` to your server's config directory as `tw-mod-interact-key.conf` (or leave the `.dist`; the server will fall back to defaults).
 5. Restart the worldserver.
+
+### Client addon (required for corpse looting)
+
+The client ignores server-initiated loot responses, so true one-key corpse looting needs a tiny addon to send `CMSG_LOOT` from the client.
+
+**Requirements:**
+- A client that exposes `C_Loot.LootUnit(guid)` (e.g. clients with the ClassicAPI plugin). The addon uses this function to initiate looting.
+- If your client does **not** expose `C_Loot.LootUnit`, the addon still works, but corpse looting falls back to targeting the corpse so you can press your normal Interact key.
+
+**Installation:**
+1. Copy the `client/TWInteractKey` folder into your WoW `Interface/AddOns/` directory.
+2. Restart the game client (or `/reload`).
+3. You should see "TW Interact Key loaded." in chat.
 
 ## How players use it
 
 ### One-time setup, in-game
 
-1. Open the macro UI (`/macro` or click the chat dropdown → Macros).
-2. Create a new macro. Pick any icon. Macro body:
-   ```
-   .interact
-   ```
-3. Drag the macro icon onto an action bar slot.
-4. Open `Key Bindings`, find the action bar slot you used, and bind a key — `V` is unused by default in 3.3.5a and is the retail interact key.
+The addon creates a small on-screen button and a macro named `TWInteract` automatically. The floating button is hidden by default.
+
+1. Type `/interact show` to display the floating button.
+2. Drag the floating button onto an action bar slot (or drag the `TWInteract` macro from `/macro`).
+3. Open `Key Bindings`, find the action bar slot you used, and bind a key.
+4. Type `/interact hide` to hide the floating button again.
+5. To move the floating button, hold Shift and drag it.
+6. To reset its position, type `/interact reset`.
+7. `/interact` with no arguments triggers the interaction directly (same as the macro).
 
 ### Usage
 
-Press the key.
+Press the key (or click the button).
 
 - **Standing next to a vendor:** vendor window opens.
 - **Standing next to a quest giver with `!` or `?`:** quest dialog opens.
-- **Looking at a dead mob you tagged:** loot window opens.
+- **Standing on a dead mob you tagged:** loot window opens (via the client addon).
 - **Standing on a herb/ore/chest:** the gather/open animation triggers.
 - **In front of a door:** the door opens.
 - **Tab-targeted a mob and pressed interact:** you start auto-attacking it (if hostile) or open dialog (if friendly).
@@ -55,19 +62,19 @@ The module ranks candidates within range and picks the best one. Lower number = 
 
 | Priority | Target |
 |---|---|
-| (Always wins) | Current target, if it's a creature in range and otherwise interactable |
+| (Always wins) | Current target, if it's a creature or usable game object in range |
 | 1 | Lootable corpse you (or your group) tapped |
 | 2 | Quest giver (flag-based) |
 | 3 | Service NPC: vendor, trainer, banker, flightmaster, innkeeper, auctioneer, repair, stable, battlemaster, spirit healer/guide, tabard designer |
 | 4 | Plain gossip NPC |
-| 5 | Usable GameObject: door, button, chest, binder, chair, goober, spellcaster, meeting stone, mailbox, guard post, barber chair, guild bank, fishing hole |
+| 5 | Usable GameObject: door, button, chest, binder, chair, goober, spellcaster, meeting stone, mailbox, guard post, fishing hole |
 | 6 | Hostile creature (only if `TargetHostile = 1`) |
 
 Targets must be within `InteractKey.Range` yards AND, by default, within `InteractKey.ConeDegrees` degrees of the player's facing direction. The current-target rule bypasses the cone check so Tab + interact always works.
 
 ## Configuration
 
-The full set of options lives in `conf/mod_interact_key.conf.dist`. Highlights:
+The full set of options lives in `conf/tw-mod-interact-key.conf.dist`. Highlights:
 
 | Key | Default | Purpose |
 |---|---|---|
@@ -79,30 +86,24 @@ The full set of options lives in `conf/mod_interact_key.conf.dist`. Highlights:
 | `InteractKey.TargetHostile` | `0` | Whether the auto-search picks hostile mobs |
 | `InteractKey.AutoAttackHostile` | `1` | Start auto-attack when the picked target is hostile |
 | `InteractKey.PrintFailMessage` | `1` | Tell the player if nothing was nearby |
-| `InteractKey.AnnounceTarget` | `0` | Debug echo on every successful interact |
+| `InteractKey.AnnounceTarget` | `0` | Chat echo on every successful interact |
+| `InteractKey.Debug` | `0` | Verbose server console logging |
 
 After tweaking the config, reload it with `.reload config` or restart the worldserver.
 
 ## Build
 
-Drop the module under `modules/` next to your other AzerothCore modules and rebuild:
+Drop the module under `modules/` next to your other Tortoise-WoW modules and rebuild:
 
 ```bash
 cd build
-cmake .. -DSCRIPTS=static -DMODULES=static -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake ..
 make -j$(nproc)
-make install
-```
-
-Or, for the Docker-based setup used by this server:
-
-```bash
-docker compose build ac-worldserver
-docker compose up -d ac-worldserver
 ```
 
 ## Known limitations
 
+- **Corpse looting requires the client addon.** The 1.12 client only opens a loot window when it has sent `CMSG_LOOT` itself. The addon bridges this gap.
 - **No reticle.** Without client-side modification we cannot tell what's literally under the player's cursor. The cone filter is the closest approximation — narrow `ConeDegrees` to ~90 if you want a tighter "what I'm looking at" feel.
 - **No tradeskill auto-cast on nodes.** When a player interacts with an herb/ore GameObject, the standard `GameObject::Use` path runs, which performs the same checks as a right-click: the skill check still applies. The module won't bypass skill requirements.
 - **GameObject filtering is type-based, not display-based.** Decorative objects of types like `GENERIC` or `SPELL_FOCUS` are excluded by design; this is conservative and may occasionally skip a niche interactable. If you find one that should work, add its `GameObjectType` to `IsInteractableGameObjectType()` in `InteractKey.cpp`.
@@ -110,10 +111,12 @@ docker compose up -d ac-worldserver
 
 ## Files
 
-- `src/InteractKey.cpp` — module logic, command handler, player-script for logout cleanup
+- `src/InteractKey.cpp` — module logic, command handler, world-script config loading
 - `src/interact_key_loader.cpp` — script loader glue
-- `conf/mod_interact_key.conf.dist` — config defaults
-- `CMakeLists.txt` — registers the two source files and the config
+- `conf/tw-mod-interact-key.conf.dist` — config defaults
+- `data/sql/world/tw_mod_interact_key_strings.sql` — module string locale data
+- `client/TWInteractKey/` — client addon for corpse looting
+- `tw-mod-interact-key.cmake` — CMake registration
 
 ## License
 
