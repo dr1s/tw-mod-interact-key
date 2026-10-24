@@ -2,7 +2,7 @@
 
 ## Overview
 
-A server-side "interact with target" key for Tortoise-WoW. It approximates retail WoW's interact key with a small client addon helper for corpse looting.
+A server-side "interact with target" key for Tortoise-WoW. It approximates retail WoW's interact key with an optional small client addon helper for corpse looting.
 
 The module adds one chat command, `.interact`. When invoked, the server looks around the player for the most useful nearby target (lootable corpse, quest giver, vendor, gather node, door, etc.) and triggers the right interaction as if the player had right-clicked it.
 
@@ -18,9 +18,11 @@ Players bind `.interact` to a key via the in-game macro system, so a single keyp
 4. After building, copy `conf/tw-mod-interact-key.conf.dist` to your server's config directory as `tw-mod-interact-key.conf` (or leave the `.dist`; the server will fall back to defaults).
 5. Restart the worldserver.
 
-### Client addon (required for corpse looting)
+### Client addon (optional for corpse looting)
 
-The client ignores server-initiated loot responses, so true one-key corpse looting needs a tiny addon to send `CMSG_LOOT` from the client.
+By default the server can loot corpses entirely on its own with `InteractKey.ServerSideAutoLoot = 1`. This works with every 1.12 client, including stock clients that do not expose `C_Loot.LootUnit`.
+
+If you prefer the classic loot-window experience (or your players want to see the loot before taking it), enable the client addon:
 
 **Requirements:**
 - A client that exposes `C_Loot.LootUnit(guid)` (e.g. clients with the ClassicAPI plugin). The addon uses this function to initiate looting.
@@ -51,7 +53,7 @@ Press the key (or click the button).
 
 - **Standing next to a vendor:** vendor window opens.
 - **Standing next to a quest giver with `!` or `?`:** quest dialog opens.
-- **Standing on a dead mob you tagged:** loot window opens (via the client addon).
+- **Standing on a dead mob you tagged:** corpse is looted instantly (with `ServerSideAutoLoot`) or a loot window opens (via the client addon).
 - **Standing on a herb/ore/chest:** the gather/open animation triggers.
 - **In front of a door:** the door opens.
 - **Tab-targeted a mob and pressed interact:** you start auto-attacking it (if hostile) or open dialog (if friendly).
@@ -88,6 +90,7 @@ The full set of options lives in `conf/tw-mod-interact-key.conf.dist`. Highlight
 | `InteractKey.PrintFailMessage` | `1` | Tell the player if nothing was nearby |
 | `InteractKey.AnnounceTarget` | `0` | Chat echo on every successful interact |
 | `InteractKey.Debug` | `0` | Verbose server console logging |
+| `InteractKey.ServerSideAutoLoot` | `0` | Loot corpses server-side instead of opening a client loot window |
 
 After tweaking the config, reload it with `.reload config` or restart the worldserver.
 
@@ -103,7 +106,7 @@ make -j$(nproc)
 
 ## Known limitations
 
-- **Corpse looting requires the client addon.** The 1.12 client only opens a loot window when it has sent `CMSG_LOOT` itself. The addon bridges this gap.
+- **Corpse looting can work without the client addon.** When `InteractKey.ServerSideAutoLoot = 1`, the server loots corpses directly. If you disable it, the 1.12 client only opens a loot window when it has sent `CMSG_LOOT` itself, so the addon (or `C_Loot.LootUnit`) is required for a visible loot window.
 - **No reticle.** Without client-side modification we cannot tell what's literally under the player's cursor. The cone filter is the closest approximation — narrow `ConeDegrees` to ~90 if you want a tighter "what I'm looking at" feel.
 - **No tradeskill auto-cast on nodes.** When a player interacts with an herb/ore GameObject, the standard `GameObject::Use` path runs, which performs the same checks as a right-click: the skill check still applies. The module won't bypass skill requirements.
 - **GameObject filtering is type-based, not display-based.** Decorative objects of types like `GENERIC` or `SPELL_FOCUS` are excluded by design; this is conservative and may occasionally skip a niche interactable. If you find one that should work, add its `GameObjectType` to `IsInteractableGameObjectType()` in `InteractKey.cpp`.

@@ -122,3 +122,17 @@ InteractKey.AnnounceTarget = 0
 #
 
 InteractKey.Debug = 0
+
+#
+#    InteractKey.ServerSideAutoLoot
+#        Description: When enabled, lootable corpses are looted entirely on the
+#                     server instead of asking the client to open a loot window.
+#                     This makes corpse looting work with any client (including
+#                     manila and clients without ClassicAPI) at the cost of not
+#                     showing the loot window. Items and money are placed directly
+#                     in the player's bags.
+#        Default:     0 - disabled (use client loot window / C_Loot.LootUnit)
+#                     1 - enabled (server-side auto-loot)
+#
+
+InteractKey.ServerSideAutoLoot = 0
