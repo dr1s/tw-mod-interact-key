@@ -1,18 +1,16 @@
 /*
- * Interact Key module for AzerothCore (3.3.5a)
+ * tw-mod-interact-key
  *
- * Adds a `.interact` chat command that finds the nearest interactable target
- * around the player and triggers the appropriate interaction (gossip, vendor,
- * loot, quest, gather, etc.) as if they had right-clicked it. Designed to be
- * bound to a key via an in-game macro for retail-style interact-on-keypress.
+ * Tortoise-WoW port of AzerothCore mod-interact-key.
+ * Provides a server-side `.interact` command that finds the best nearby
+ * interactable target and triggers the appropriate interaction.
  */
 
 #include "Cell.h"
 #include "CellImpl.h"
 #include "Chat.h"
-#include "ChatCommand.h"
-#include "CommandScript.h"
-#include "Config.h"
+#include "ScriptObjects.h"
+#include "Config/Config.h"
 #include "CreatureAI.h"
 #include "GameObject.h"
 #include "GameObjectAI.h"
@@ -25,32 +23,30 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "ScriptedGossip.h"
-#include "ScriptMgr.h"
 #include "SharedDefines.h"
 #include "Timer.h"
 #include "Unit.h"
 #include "World.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
+#include <cstdarg>
+#include <iomanip>
 #include <mutex>
+#include <sstream>
 #include <unordered_map>
-
-using namespace Acore::ChatCommands;
 
 namespace InteractKey
 {
-    // Range-only checks. The stock AllCreaturesOfEntryInRange / AllGameObjectsWithEntryInRange
-    // do a strict GetEntry() == m_uiEntry comparison, so entry 0 matches nothing. We need to
-    // see every nearby creature/gameobject regardless of entry, so we provide our own checks.
+    // 3D range checks. The stock AllCreaturesInRange / AllGameObjectsInRange use
+    // 2D distance, which can miss targets on slopes/stairs. We need 3D.
     class AnyCreatureInRangeCheck
     {
     public:
         AnyCreatureInRangeCheck(WorldObject const* obj, float range) : _obj(obj), _range(range) { }
         bool operator()(Creature* c) const
         {
-            return c && _obj->IsWithinDist(c, _range, false);
+            return c && _obj->IsWithinDistInMap(c, _range);
         }
     private:
         WorldObject const* _obj;
@@ -63,7 +59,7 @@ namespace InteractKey
         AnyGameObjectInRangeCheck(WorldObject const* obj, float range) : _obj(obj), _range(range) { }
         bool operator()(GameObject* go) const
         {
-            return go && _obj->IsWithinDist(go, _range, false);
+            return go && _obj->IsWithinDistInMap(go, _range);
         }
     private:
         WorldObject const* _obj;
@@ -104,51 +100,75 @@ namespace InteractKey
         bool preferred = false; // current target gets a flag to win ties
     };
 
-    bool IsEnabled()
+    enum Strings
     {
-        return sConfigMgr->GetOption<bool>("InteractKey.Enable", true);
+        INTERACT_KEY_DISABLED       = 1,
+        INTERACT_KEY_NOTHING_NEARBY = 2,
+        INTERACT_KEY_ANNOUNCE       = 3,
+    };
+
+    char const* ModuleName = "tw-mod-interact-key";
+
+    // ---- configuration ----
+    bool   g_enabled = true;
+    float  g_range = 5.5f;
+    float  g_coneDegrees = 180.0f;
+    uint32 g_cooldownMs = 250;
+    bool   g_preferCurrentTarget = true;
+    bool   g_targetHostile = false;
+    bool   g_autoAttackHostile = true;
+    bool   g_printFailMessage = true;
+    bool   g_announceTarget = false;
+    bool   g_debug = false;
+
+    void DebugLog(const char* fmt, ...)
+    {
+        if (!g_debug)
+            return;
+
+        va_list ap;
+        va_start(ap, fmt);
+        char buf[1024];
+        vsnprintf(buf, 1024, fmt, ap);
+        va_end(ap);
+
+        sLog.outString("[tw-mod-interact-key] %s", buf);
     }
 
-    float GetRange()
+    void LoadConfig()
     {
-        return std::clamp(sConfigMgr->GetOption<float>("InteractKey.Range", 5.5f), 1.0f, 30.0f);
+        g_enabled            = sConfig.GetBoolDefault("InteractKey.Enable", true);
+        g_range              = std::clamp(sConfig.GetFloatDefault("InteractKey.Range", 5.5f), 1.0f, 30.0f);
+        g_coneDegrees        = sConfig.GetFloatDefault("InteractKey.ConeDegrees", 180.0f);
+        g_cooldownMs         = std::min<uint32>(5000u, static_cast<uint32>(sConfig.GetIntDefault("InteractKey.CooldownMs", 250)));
+        g_preferCurrentTarget = sConfig.GetBoolDefault("InteractKey.PreferCurrentTarget", true);
+        g_targetHostile      = sConfig.GetBoolDefault("InteractKey.TargetHostile", false);
+        g_autoAttackHostile  = sConfig.GetBoolDefault("InteractKey.AutoAttackHostile", true);
+        g_printFailMessage   = sConfig.GetBoolDefault("InteractKey.PrintFailMessage", true);
+        g_announceTarget     = sConfig.GetBoolDefault("InteractKey.AnnounceTarget", false);
+        g_debug              = sConfig.GetBoolDefault("InteractKey.Debug", false);
     }
+
+    bool IsEnabled()             { return g_enabled; }
+    float GetRange()             { return g_range; }
 
     float GetConeRadians()
     {
-        float const degrees = sConfigMgr->GetOption<float>("InteractKey.ConeDegrees", 180.0f);
+        float const degrees = g_coneDegrees;
         if (degrees <= 0.0f || degrees >= 360.0f)
             return 0.0f; // 0 means "any direction"
-        return float(degrees * M_PI / 180.0);
+        return float(degrees * M_PI_F / 180.0);
     }
 
-    uint32 GetCooldownMs()
-    {
-        return std::min<uint32>(5000, sConfigMgr->GetOption<uint32>("InteractKey.CooldownMs", 250));
-    }
-
-    bool ShouldTargetHostile()
-    {
-        return sConfigMgr->GetOption<bool>("InteractKey.TargetHostile", false);
-    }
-
-    bool ShouldAutoAttackHostile()
-    {
-        return sConfigMgr->GetOption<bool>("InteractKey.AutoAttackHostile", true);
-    }
-
-    bool ShouldPreferCurrentTarget()
-    {
-        return sConfigMgr->GetOption<bool>("InteractKey.PreferCurrentTarget", true);
-    }
-
-    bool ShouldPrintFail()
-    {
-        return sConfigMgr->GetOption<bool>("InteractKey.PrintFailMessage", true);
-    }
+    uint32 GetCooldownMs()       { return g_cooldownMs; }
+    bool ShouldTargetHostile()   { return g_targetHostile; }
+    bool ShouldAutoAttackHostile() { return g_autoAttackHostile; }
+    bool ShouldPreferCurrentTarget() { return g_preferCurrentTarget; }
+    bool ShouldPrintFail()       { return g_printFailMessage; }
+    bool ShouldAnnounceTarget()  { return g_announceTarget; }
 
     // ---- per-player cooldown tracking (cleared on logout) ----
-    std::unordered_map<ObjectGuid, uint32> g_lastInteractMs;
+    std::unordered_map<uint64, uint32> g_lastInteractMs;
     std::mutex g_lastInteractMutex;
 
     bool CheckAndStampCooldown(Player* player)
@@ -157,16 +177,16 @@ namespace InteractKey
         if (cd == 0)
             return true;
 
-        uint32 const now = getMSTime();
+        uint32 const now = WorldTimer::getMSTime();
         std::lock_guard<std::mutex> lock(g_lastInteractMutex);
         auto it = g_lastInteractMs.find(player->GetGUID());
-        if (it != g_lastInteractMs.end() && getMSTimeDiff(it->second, now) < cd)
+        if (it != g_lastInteractMs.end() && WorldTimer::getMSTimeDiff(it->second, now) < cd)
             return false;
         g_lastInteractMs[player->GetGUID()] = now;
         return true;
     }
 
-    void ForgetPlayer(ObjectGuid guid)
+    void ForgetPlayer(uint64 guid)
     {
         std::lock_guard<std::mutex> lock(g_lastInteractMutex);
         g_lastInteractMs.erase(guid);
@@ -175,12 +195,20 @@ namespace InteractKey
     // ---- classification ----
     bool IsCorpseLootableBy(Creature* creature, Player* player)
     {
-        if (!creature->isDead())
+        if (!creature->IsDead())
+        {
+            DebugLog("IsCorpseLootableBy: %s (entry %u) not dead", creature->GetName(), creature->GetEntry());
             return false;
+        }
         if (creature->loot.isLooted())
+        {
+            DebugLog("IsCorpseLootableBy: %s (entry %u) loot already taken", creature->GetName(), creature->GetEntry());
             return false;
+        }
         // Tappable check: the creature is tapped by this player or their group
-        return creature->isTappedBy(player) || (creature->GetLootRecipientGroup() && player->GetGroup() == creature->GetLootRecipientGroup());
+        bool tapped = creature->IsTappedBy(player);
+        DebugLog("IsCorpseLootableBy: %s (entry %u) IsTappedBy=%s", creature->GetName(), creature->GetEntry(), tapped ? "true" : "false");
+        return tapped;
     }
 
     bool IsInteractableGameObjectType(GameObject* go)
@@ -196,10 +224,10 @@ namespace InteractKey
             case GAMEOBJECT_TYPE_GOOBER:
             case GAMEOBJECT_TYPE_SPELLCASTER:
             case GAMEOBJECT_TYPE_MEETINGSTONE:
-            case GAMEOBJECT_TYPE_MAILBOX:
+            // NOTE: MAILBOX, BARBER_CHAIR and GUILD_BANK are excluded.
+            // Mailbox/barber/guild-bank UIs are driven by the client;
+            // there are no server opcodes to open them.
             case GAMEOBJECT_TYPE_GUARDPOST:
-            case GAMEOBJECT_TYPE_BARBER_CHAIR:
-            case GAMEOBJECT_TYPE_GUILD_BANK:
             case GAMEOBJECT_TYPE_FISHINGHOLE:
                 return true;
             default:
@@ -213,15 +241,25 @@ namespace InteractKey
             return TargetKind::None;
 
         if (creature->IsTotem() || creature->IsTrigger())
+        {
+            DebugLog("ClassifyCreature: %s (entry %u) skipped (totem/trigger)", creature->GetName(), creature->GetEntry());
             return TargetKind::None;
-        if (creature->IsPet() && creature->GetOwnerGUID() != player->GetGUID())
+        }
+        if (creature->IsPet() && creature->GetOwnerGuid() != player->GetObjectGuid())
+        {
+            DebugLog("ClassifyCreature: %s (entry %u) skipped (other player's pet)", creature->GetName(), creature->GetEntry());
             return TargetKind::None;
+        }
 
         // Dead -> only relevant if lootable
-        if (creature->isDead())
+        if (creature->IsDead())
         {
             if (IsCorpseLootableBy(creature, player))
+            {
+                DebugLog("ClassifyCreature: %s (entry %u) -> LootableCorpse", creature->GetName(), creature->GetEntry());
                 return TargetKind::LootableCorpse;
+            }
+            DebugLog("ClassifyCreature: %s (entry %u) dead but not lootable", creature->GetName(), creature->GetEntry());
             return TargetKind::None;
         }
 
@@ -232,7 +270,10 @@ namespace InteractKey
         if (friendly && npcFlags != UNIT_NPC_FLAG_NONE)
         {
             if (npcFlags & UNIT_NPC_FLAG_QUESTGIVER)
+            {
+                DebugLog("ClassifyCreature: %s (entry %u) -> QuestGiver", creature->GetName(), creature->GetEntry());
                 return TargetKind::QuestGiver;
+            }
 
             uint32 const serviceMask =
                 UNIT_NPC_FLAG_VENDOR | UNIT_NPC_FLAG_TRAINER | UNIT_NPC_FLAG_BANKER |
@@ -241,16 +282,30 @@ namespace InteractKey
                 UNIT_NPC_FLAG_SPIRITHEALER | UNIT_NPC_FLAG_SPIRITGUIDE | UNIT_NPC_FLAG_TABARDDESIGNER |
                 UNIT_NPC_FLAG_PETITIONER;
             if (npcFlags & serviceMask)
+            {
+                DebugLog("ClassifyCreature: %s (entry %u) -> ServiceNpc", creature->GetName(), creature->GetEntry());
                 return TargetKind::ServiceNpc;
+            }
 
             if (npcFlags & UNIT_NPC_FLAG_GOSSIP)
+            {
+                DebugLog("ClassifyCreature: %s (entry %u) -> GossipNpc", creature->GetName(), creature->GetEntry());
                 return TargetKind::GossipNpc;
+            }
         }
 
         // Hostile, attackable
         if (!friendly && player->IsValidAttackTarget(creature))
+        {
+            DebugLog("ClassifyCreature: %s (entry %u) -> HostileCreature", creature->GetName(), creature->GetEntry());
             return TargetKind::HostileCreature;
+        }
 
+        DebugLog("ClassifyCreature: %s (entry %u) not classified (friendly=%s, validAttack=%s, npcFlags=%u)",
+            creature->GetName(), creature->GetEntry(),
+            friendly ? "true" : "false",
+            (!friendly && player->IsValidAttackTarget(creature)) ? "true" : "false",
+            npcFlags);
         return TargetKind::None;
     }
 
@@ -259,13 +314,13 @@ namespace InteractKey
     {
         std::list<Creature*> creatures;
         AnyCreatureInRangeCheck check(player, range);
-        Acore::CreatureListSearcher<AnyCreatureInRangeCheck> searcher(player, creatures, check);
-        Cell::VisitObjects(player, searcher, range);
+        MaNGOS::CreatureListSearcher<AnyCreatureInRangeCheck> searcher(creatures, check);
+        Cell::VisitGridObjects(player, searcher, range);
         for (Creature* creature : creatures)
         {
-            if (!creature || !player->IsWithinDistInMap(creature, range))
+            if (!creature)
                 continue;
-            if (coneRad > 0.0f && !player->HasInArc(coneRad, creature))
+            if (coneRad > 0.0f && !player->HasInArc(creature, coneRad))
                 continue;
 
             TargetKind const kind = ClassifyCreature(creature, player);
@@ -286,15 +341,13 @@ namespace InteractKey
     {
         std::list<GameObject*> gobs;
         AnyGameObjectInRangeCheck check(player, range);
-        Acore::GameObjectListSearcher<AnyGameObjectInRangeCheck> searcher(player, gobs, check);
-        Cell::VisitObjects(player, searcher, range);
+        MaNGOS::GameObjectListSearcher<AnyGameObjectInRangeCheck> searcher(gobs, check);
+        Cell::VisitGridObjects(player, searcher, range);
         for (GameObject* go : gobs)
         {
             if (!go || !go->IsInWorld())
                 continue;
-            if (!player->IsWithinDistInMap(go, range))
-                continue;
-            if (coneRad > 0.0f && !player->HasInArc(coneRad, go))
+            if (coneRad > 0.0f && !player->HasInArc(go, coneRad))
                 continue;
             if (!IsInteractableGameObjectType(go))
                 continue;
@@ -345,11 +398,10 @@ namespace InteractKey
     // ---- perform ----
     void OpenCreatureGossip(Player* player, Creature* creature)
     {
-        if (sScriptMgr->OnGossipHello(player, creature))
+        if (sScriptMgr.OnGossipHello(player, creature))
             return;
-        player->PrepareGossipMenu(creature, creature->GetGossipMenuId(), true);
+        player->PrepareGossipMenu(creature, creature->GetDefaultGossipMenuId());
         player->SendPreparedGossip(creature);
-        creature->AI()->sGossipHello(player);
     }
 
     void PerformInteract(Player* player, Candidate const& best)
@@ -357,14 +409,25 @@ namespace InteractKey
         if (!best.object)
             return;
 
-        player->SetSelection(best.object->GetGUID());
+        player->SetSelectionGuid(best.object->GetObjectGuid());
 
         switch (best.kind)
         {
             case TargetKind::LootableCorpse:
             {
                 if (Creature* c = best.object->ToCreature())
-                    player->SendLoot(c->GetGUID(), LOOT_CORPSE);
+                {
+                    DebugLog("PerformInteract: asking client to loot %s (entry %u, guid %s)",
+                        c->GetName(), c->GetEntry(), c->GetObjectGuid().GetString().c_str());
+
+                    // Vanilla 1.12 ignores server-initiated SMSG_LOOT_RESPONSE.
+                    // Send the target GUID to the client addon so it can send CMSG_LOOT.
+                    // Format must match UnitGUID(): "0xHHHHHHHHLLLLLLLL" (16 hex digits).
+                    std::ostringstream oss;
+                    oss << "0x" << std::hex << std::uppercase << std::setw(16) << std::setfill('0')
+                        << c->GetObjectGuid().GetRawValue();
+                    player->SendAddonMessage("TW_INTERACT", std::string("LOOT:") + oss.str() + ":" + c->GetName());
+                }
                 break;
             }
             case TargetKind::QuestGiver:
@@ -372,17 +435,25 @@ namespace InteractKey
             case TargetKind::GossipNpc:
             {
                 if (Creature* c = best.object->ToCreature())
-                {
-                    // Stop the creature briefly so the window stays open (matches right-click flow)
-                    c->PauseMovementForInteraction();
                     OpenCreatureGossip(player, c);
-                }
                 break;
             }
             case TargetKind::UsableGameObject:
             {
                 if (GameObject* go = best.object->ToGameObject())
-                    go->Use(player);
+                {
+                    // Chests need direct loot sending; GameObject::Use() does not
+                    // open the loot window for GAMEOBJECT_TYPE_CHEST.
+                    if (go->GetGoType() == GAMEOBJECT_TYPE_CHEST)
+                    {
+                        go->Use(player); // trigger scripts / linked objects first
+                        player->SendLoot(go->GetObjectGuid(), LOOT_CORPSE);
+                    }
+                    else
+                    {
+                        go->Use(player);
+                    }
+                }
                 break;
             }
             case TargetKind::HostileCreature:
@@ -414,24 +485,19 @@ namespace InteractKey
     }
 
     // ---- command entry point ----
-    bool HandleInteractCommand(ChatHandler* handler)
+    bool HandleInteractCommand(ChatHandler* handler, char* /*args*/)
     {
         if (!IsEnabled())
         {
-            handler->PSendSysMessage("The interact command is disabled on this server.");
+            handler->PSendSysMessage(sObjectMgr.GetModuleString(ModuleName, INTERACT_KEY_DISABLED, handler->GetSession()->GetSessionDbLocaleIndex()));
             return true;
         }
 
         Player* player = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
         if (!player || !player->IsInWorld())
             return true;
-        if (player->IsBeingTeleported() || player->IsInFlight())
+        if (player->IsBeingTeleported() || player->IsTaxiFlying())
             return true;
-        if (!player->IsAlive())
-        {
-            // Dead players can still loot their corpse-runback target, but not much else.
-            // Let the search proceed; if nothing interactable is found, the fail message handles it.
-        }
 
         if (!CheckAndStampCooldown(player))
             return true;
@@ -445,7 +511,8 @@ namespace InteractKey
         // Current target preference (bypasses cone check so you can interact with a tab-target behind you)
         if (ShouldPreferCurrentTarget())
         {
-            if (ObjectGuid const targetGuid = player->GetTarget())
+            ObjectGuid const targetGuid = player->GetSelectionGuid();
+            if (!targetGuid.IsEmpty())
             {
                 if (Unit* target = ObjectAccessor::GetUnit(*player, targetGuid))
                 {
@@ -467,25 +534,43 @@ namespace InteractKey
                         }
                     }
                 }
+                else if (GameObject* go = player->GetMap()->GetGameObject(targetGuid))
+                {
+                    if (go->IsInWorld() && player->IsWithinDistInMap(go, range) && IsInteractableGameObjectType(go))
+                    {
+                        Candidate c;
+                        c.object = go;
+                        c.kind = TargetKind::UsableGameObject;
+                        c.distance = player->GetDistance(go);
+                        c.preferred = true;
+                        candidates.push_back(c);
+                    }
+                }
             }
         }
 
         CollectCreatureCandidates(player, range, coneRad, candidates);
         CollectGameObjectCandidates(player, range, coneRad, candidates);
 
+        DebugLog("HandleInteractCommand: collected %zu candidates", candidates.size());
+
         Candidate best = PickBest(candidates);
         if (best.kind == TargetKind::None)
         {
+            DebugLog("HandleInteractCommand: no suitable target found");
             if (ShouldPrintFail())
-                handler->PSendSysMessage("Nothing to interact with within {:.1f} yards.", range);
+                handler->PSendSysMessage(sObjectMgr.GetModuleString(ModuleName, INTERACT_KEY_NOTHING_NEARBY, handler->GetSession()->GetSessionDbLocaleIndex()), range);
             return true;
         }
 
+        DebugLog("HandleInteractCommand: picked target %s (kind=%s, dist=%.1f)",
+            best.object->GetName(), KindName(best.kind), best.distance);
+
         PerformInteract(player, best);
 
-        if (sConfigMgr->GetOption<bool>("InteractKey.AnnounceTarget", false))
+        if (ShouldAnnounceTarget())
         {
-            handler->PSendSysMessage("Interacting with {}: {} ({:.1f}y)",
+            handler->PSendSysMessage(sObjectMgr.GetModuleString(ModuleName, INTERACT_KEY_ANNOUNCE, handler->GetSession()->GetSessionDbLocaleIndex()),
                 KindName(best.kind),
                 best.object->GetName(),
                 best.distance);
@@ -495,16 +580,36 @@ namespace InteractKey
 }
 
 // ---- script registration ----
+class InteractKeyWorldScript : public WorldScript
+{
+public:
+    InteractKeyWorldScript()
+        : WorldScript("InteractKeyWorld", { WORLDHOOK_ON_BEFORE_WORLD_INITIALIZED, WORLDHOOK_ON_AFTER_CONFIG_LOAD })
+    {
+    }
+
+    void OnBeforeWorldInitialized() override
+    {
+        sLog.outString("[tw-mod-interact-key] module loaded.");
+        InteractKey::LoadConfig();
+    }
+
+    void OnAfterConfigLoad(bool /*reload*/) override
+    {
+        InteractKey::LoadConfig();
+    }
+};
+
 class interact_key_commandscript : public CommandScript
 {
 public:
     interact_key_commandscript() : CommandScript("interact_key_commandscript") { }
 
-    ChatCommandTable GetCommands() const override
+    std::vector<ChatCommand> GetCommands() const override
     {
-        static ChatCommandTable table =
+        static std::vector<ChatCommand> table =
         {
-            { "interact", InteractKey::HandleInteractCommand, SEC_PLAYER, Console::No }
+            { "interact", SEC_PLAYER, false, nullptr, "", nullptr, 0, "", 0, InteractKey::HandleInteractCommand }
         };
         return table;
     }
@@ -515,7 +620,7 @@ class interact_key_playerscript : public PlayerScript
 public:
     interact_key_playerscript() : PlayerScript("interact_key_playerscript", { PLAYERHOOK_ON_LOGOUT }) { }
 
-    void OnPlayerLogout(Player* player) override
+    void OnLogout(Player* player) override
     {
         if (player)
             InteractKey::ForgetPlayer(player->GetGUID());
@@ -524,6 +629,7 @@ public:
 
 void AddSC_mod_interact_key()
 {
+    new InteractKeyWorldScript();
     new interact_key_commandscript();
     new interact_key_playerscript();
 }

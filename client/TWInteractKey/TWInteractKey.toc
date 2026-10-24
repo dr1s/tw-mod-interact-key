@@ -1,0 +1,7 @@
+## Interface: 11200
+## Title: TW Interact Key
+## Notes: Client helper for tw-mod-interact-key. Receives target GUIDs from the server and initiates loot.
+## Author: tw-mod-interact-key
+## Version: 1.0.2
+## SavedVariables: TWInteractSettings
+TWInteractKey.lua
