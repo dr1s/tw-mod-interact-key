@@ -27,6 +27,7 @@
 #include "Timer.h"
 #include "Unit.h"
 #include "World.h"
+#include "WorldSession.h"
 
 #include <algorithm>
 #include <cmath>
@@ -120,6 +121,7 @@ namespace InteractKey
     bool   g_printFailMessage = true;
     bool   g_announceTarget = false;
     bool   g_debug = false;
+    bool   g_serverSideAutoLoot = false;
 
     void DebugLog(const char* fmt, ...)
     {
@@ -147,6 +149,7 @@ namespace InteractKey
         g_printFailMessage   = sConfig.GetBoolDefault("InteractKey.PrintFailMessage", true);
         g_announceTarget     = sConfig.GetBoolDefault("InteractKey.AnnounceTarget", false);
         g_debug              = sConfig.GetBoolDefault("InteractKey.Debug", false);
+        g_serverSideAutoLoot = sConfig.GetBoolDefault("InteractKey.ServerSideAutoLoot", false);
     }
 
     bool IsEnabled()             { return g_enabled; }
@@ -396,6 +399,43 @@ namespace InteractKey
     }
 
     // ---- perform ----
+    void ServerSideLootCorpse(Player* player, Creature* creature)
+    {
+        if (!creature || creature->IsAlive())
+            return;
+        if (!player->IsWithinDistInMap(creature, player->GetMaxLootDistance(creature), true, SizeFactor::None))
+            return;
+        if (!creature->IsTappedBy(player))
+            return;
+
+        DebugLog("ServerSideLootCorpse: looting %s (entry %u) server-side", creature->GetName(), creature->GetEntry());
+
+        // Set up the loot context exactly as a manual click would.
+        player->SetLootGuid(creature->GetObjectGuid());
+        player->SendLoot(creature->GetObjectGuid(), LOOT_CORPSE);
+
+        // Take money.
+        WorldPacket moneyPacket(CMSG_LOOT_MONEY, 0);
+        player->GetSession()->HandleLootMoneyOpcode(moneyPacket);
+
+        // Take items one slot at a time until nothing remains for this player.
+        Loot& loot = creature->loot;
+        uint32 maxSlot = loot.GetMaxSlotInLootFor(player->GetGUIDLow());
+        for (uint32 slot = 0; slot < maxSlot; ++slot)
+        {
+            // Skip already-looted slots and slots that have nothing for this player.
+            if (!loot.LootItemInSlot(slot, player->GetGUIDLow()))
+                continue;
+
+            WorldPacket itemPacket(CMSG_AUTOSTORE_LOOT_ITEM, 1);
+            itemPacket << uint8(slot);
+            player->GetSession()->HandleAutostoreLootItemOpcode(itemPacket);
+        }
+
+        // Release the loot and clean up the corpse.
+        player->GetSession()->DoLootRelease(creature->GetObjectGuid());
+    }
+
     void OpenCreatureGossip(Player* player, Creature* creature)
     {
         if (sScriptMgr.OnGossipHello(player, creature))
@@ -417,16 +457,23 @@ namespace InteractKey
             {
                 if (Creature* c = best.object->ToCreature())
                 {
-                    DebugLog("PerformInteract: asking client to loot %s (entry %u, guid %s)",
-                        c->GetName(), c->GetEntry(), c->GetObjectGuid().GetString().c_str());
+                    if (g_serverSideAutoLoot)
+                    {
+                        ServerSideLootCorpse(player, c);
+                    }
+                    else
+                    {
+                        DebugLog("PerformInteract: asking client to loot %s (entry %u, guid %s)",
+                            c->GetName(), c->GetEntry(), c->GetObjectGuid().GetString().c_str());
 
-                    // Vanilla 1.12 ignores server-initiated SMSG_LOOT_RESPONSE.
-                    // Send the target GUID to the client addon so it can send CMSG_LOOT.
-                    // Format must match UnitGUID(): "0xHHHHHHHHLLLLLLLL" (16 hex digits).
-                    std::ostringstream oss;
-                    oss << "0x" << std::hex << std::uppercase << std::setw(16) << std::setfill('0')
-                        << c->GetObjectGuid().GetRawValue();
-                    player->SendAddonMessage("TW_INTERACT", std::string("LOOT:") + oss.str() + ":" + c->GetName());
+                        // Vanilla 1.12 ignores server-initiated SMSG_LOOT_RESPONSE.
+                        // Send the target GUID to the client addon so it can send CMSG_LOOT.
+                        // Format must match UnitGUID(): "0xHHHHHHHHLLLLLLLL" (16 hex digits).
+                        std::ostringstream oss;
+                        oss << "0x" << std::hex << std::uppercase << std::setw(16) << std::setfill('0')
+                            << c->GetObjectGuid().GetRawValue();
+                        player->SendAddonMessage("TW_INTERACT", std::string("LOOT:") + oss.str() + ":" + c->GetName());
+                    }
                 }
                 break;
             }
